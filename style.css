@@ -1767,6 +1767,68 @@ input:checked + .toggle-slider::before {
     transition: all var(--transition-base);
 }
 
+.recaptcha-container {
+    display: none;
+}
+
+.tracking-members-section {
+    margin-top: var(--spacing-6);
+}
+
+.connected-members-list {
+    display: grid;
+    gap: var(--spacing-4);
+}
+
+.member-card {
+    padding: var(--spacing-4);
+    background: white;
+    border-radius: var(--radius-2xl);
+    box-shadow: var(--shadow);
+    display: grid;
+    gap: var(--spacing-2);
+}
+
+.member-details {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: var(--spacing-2);
+}
+
+.member-name {
+    font-weight: 700;
+    color: var(--gray-900);
+}
+
+.member-role {
+    font-size: 0.75rem;
+    padding: 0.35rem 0.75rem;
+    border-radius: var(--radius-full);
+    background: var(--gray-100);
+    color: var(--gray-700);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.member-role.parent {
+    background: rgba(147, 51, 234, 0.1);
+    color: var(--primary-700);
+}
+
+.member-role.child {
+    background: rgba(236, 72, 153, 0.1);
+    color: var(--pink-500);
+}
+
+.member-meta {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--spacing-2);
+    color: var(--gray-500);
+    font-size: 0.875rem;
+}
+
 .toast.active {
     opacity: 1;
     transform: translateX(-50%) translateY(0);

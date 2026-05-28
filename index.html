@@ -43,6 +43,7 @@
             </div>
 
             <div class="login-card">
+                <div id="recaptcha-container" class="recaptcha-container"></div>
                 <div id="loginStep1" class="login-step active">
                     <input type="text" id="userName" class="input-field" placeholder="Full Name">
                     <input type="tel" id="userPhone" class="input-field" placeholder="Phone Number" maxlength="10">
@@ -307,6 +308,21 @@
                     </div>
                 </div>
             </div>
+
+            <div class="tracking-members-section">
+                <h3 class="section-title">Connected Family</h3>
+                <div id="connectedMembersList" class="connected-members-list">
+                    <div class="empty-state">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                            <circle cx="9" cy="7" r="4"/>
+                            <line x1="19" y1="8" x2="19" y2="14"/>
+                            <line x1="22" y1="11" x2="16" y2="11"/>
+                        </svg>
+                        <p>No connected family members yet</p>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -562,6 +578,6 @@
         <div class="app-footer-inner">© 2026 Vasu</div>
     </footer>
 
-    <script src="script.js"></script>
+    <script type="module" src="script.js"></script>
 </body>
 </html>

@@ -1,16 +1,43 @@
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.13.0/firebase-app.js";
+import { getAuth, RecaptchaVerifier, signInWithPhoneNumber, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/12.13.0/firebase-auth.js";
+import { getFirestore, collection, doc, setDoc, getDoc, query, where, getDocs, addDoc, deleteDoc, serverTimestamp, updateDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/12.13.0/firebase-firestore.js";
+
 // Copyright 2026 Vasu
 // SafeHer - Women Safety Application
 // Main Script File
 
+// ==================== FIREBASE INITIALIZATION ====================
+const firebaseConfig = {
+    apiKey: "AIzaSyDq-9cEpG3u5EgSY-ROscG-FP40WxNXEDw",
+    authDomain: "safeher1807.firebaseapp.com",
+    projectId: "safeher1807",
+    storageBucket: "safeher1807.firebasestorage.app",
+    messagingSenderId: "110077377367",
+    appId: "1:110077377367:web:e42f1bdbdea4a7acaf1c12"
+};
+
+const firebaseApp = initializeApp(firebaseConfig);
+const auth = getAuth(firebaseApp);
+const db = getFirestore(firebaseApp);
+
+let confirmationResult = null;
+let locationWatchId = null;
+let liveLocationListeners = [];
+let familyConnectionUnsubscribe = null;
+let currentUserLocation = null;
+
 // ==================== STATE MANAGEMENT ====================
 const appState = {
     user: {
+        uid: '',
         name: '',
         phone: '',
+        fullPhone: '',
         gender: '',
         role: ''
     },
     familyMembers: [],
+    liveLocations: {},
     emergencyContacts: [
         { name: 'Mom', phone: '+91 9876543210' },
         { name: 'Dad', phone: '+91 9876543211' }
@@ -92,6 +119,36 @@ function initSplash() {
     }, 3000); // Show splash for 3 seconds
 }
 
+function initFirebase() {
+    window.recaptchaVerifier = new RecaptchaVerifier('recaptcha-container', {
+        size: 'invisible',
+        callback: () => {
+            console.log('reCAPTCHA solved');
+        }
+    }, auth);
+
+    window.recaptchaVerifier.render()
+        .then(widgetId => {
+            console.log('reCAPTCHA widget rendered', widgetId);
+        })
+        .catch(error => {
+            console.error('reCAPTCHA initialization failed:', error);
+        });
+
+    onAuthStateChanged(auth, async (user) => {
+        if (user) {
+            console.log('Firebase auth state changed: user signed in', user.uid);
+            await loadUserProfile(user);
+            await loadFamilyConnections();
+            updateDashboard();
+            initTracking();
+            showScreen('home');
+        } else {
+            console.log('Firebase auth state changed: user signed out');
+        }
+    });
+}
+
 // ==================== LOGIN FUNCTIONALITY ====================
 
 function initLogin() {
@@ -159,7 +216,7 @@ function initLogin() {
     }
 }
 
-function handleSendOtp() {
+async function handleSendOtp() {
     const nameInput = document.getElementById('userName');
     const phoneInput = document.getElementById('userPhone');
 
@@ -194,33 +251,32 @@ function handleSendOtp() {
     // Save user data
     appState.user.name = name;
     appState.user.phone = phone;
+    appState.user.fullPhone = phone.startsWith('+') ? phone : `+91${phone}`;
 
-    // Simulate OTP sending
-    showToast('OTP sent successfully!', 'success');
+    // Send OTP using Firebase Phone Auth
+    try {
+        const verifier = window.recaptchaVerifier;
+        if (!verifier) {
+            showToast('Unable to initialize reCAPTCHA verification', 'error');
+            return;
+        }
 
-    // Move to OTP step
-    setTimeout(() => {
+        confirmationResult = await signInWithPhoneNumber(auth, appState.user.fullPhone, verifier);
+        console.log('OTP sent to', appState.user.fullPhone);
+        showToast('OTP sent successfully!', 'success');
+
         document.getElementById('loginStep1').classList.remove('active');
         document.getElementById('loginStep2').classList.add('active');
 
-        // Focus first OTP input
         const firstOtpInput = document.querySelector('.otp-input[data-index="0"]');
         if (firstOtpInput) firstOtpInput.focus();
-
-        // Demo: Fill OTP automatically (123456)
-        setTimeout(() => {
-            const otpInputs = document.querySelectorAll('.otp-input');
-            otpInputs.forEach((input, index) => {
-                setTimeout(() => {
-                    input.value = index + 1;
-                    input.dispatchEvent(new Event('input'));
-                }, index * 100);
-            });
-        }, 500);
-    }, 1000);
+    } catch (error) {
+        console.error('Failed to send OTP:', error);
+        showToast(error.message || 'Failed to send OTP, please try again', 'error');
+    }
 }
 
-function handleVerifyOtp() {
+async function handleVerifyOtp() {
     const otpInputs = document.querySelectorAll('.otp-input');
     let otp = '';
 
@@ -233,21 +289,21 @@ function handleVerifyOtp() {
         return;
     }
 
-    // Simulate OTP verification (always success for demo)
-    showToast('Verification successful!', 'success');
+    if (!confirmationResult) {
+        showToast('Please request OTP first', 'error');
+        return;
+    }
 
-    // Save user data to localStorage
-    localStorage.setItem('safeHerUser', JSON.stringify(appState.user));
-
-    setTimeout(() => {
-        // Navigate to home
-        showScreen('home');
-
-        // Update dashboard
-        updateDashboard();
-
-        showToast(`Welcome, ${appState.user.name}!`, 'success');
-    }, 1000);
+    try {
+        const credential = await confirmationResult.confirm(otp);
+        const user = credential.user;
+        console.log('Phone authentication successful', user.uid);
+        showToast('Verification successful!', 'success');
+        await handleLoginSuccess(user);
+    } catch (error) {
+        console.error('OTP verification failed:', error);
+        showToast(error.message || 'OTP verification failed', 'error');
+    }
 }
 
 function handleResendOtp() {
@@ -271,6 +327,263 @@ function handleResendOtp() {
             }, index * 100);
         });
     }, 500);
+}
+
+async function handleLoginSuccess(user) {
+    appState.user.uid = user.uid;
+    appState.user.fullPhone = user.phone || appState.user.fullPhone;
+    appState.user.phone = appState.user.fullPhone ? appState.user.fullPhone.replace('+91', '') : appState.user.phone;
+
+    await saveUserToFirestore(user.uid);
+    localStorage.setItem('safeHerUser', JSON.stringify(appState.user));
+
+    await loadFamilyConnections();
+    updateDashboard();
+
+    if (appState.safeMode) {
+        startSafeModeTracking();
+    }
+
+    showScreen('home');
+    showToast(`Welcome, ${appState.user.name}!`, 'success');
+}
+
+async function saveUserToFirestore(uid) {
+    try {
+        const userRef = doc(db, 'users', uid);
+        await setDoc(userRef, {
+            name: appState.user.name,
+            phone: appState.user.fullPhone,
+            gender: appState.user.gender,
+            role: appState.user.role,
+            createdAt: serverTimestamp()
+        }, { merge: true });
+        console.log('User saved to Firestore:', uid);
+    } catch (error) {
+        console.error('Error saving user to Firestore:', error);
+        showToast('Unable to save profile. Try again later.', 'error');
+    }
+}
+
+async function loadUserProfile(user) {
+    try {
+        const userRef = doc(db, 'users', user.uid);
+        const userSnap = await getDoc(userRef);
+
+        if (userSnap.exists()) {
+            const userData = userSnap.data();
+            appState.user = {
+                uid: user.uid,
+                name: userData.name || appState.user.name,
+                phone: userData.phone ? userData.phone.replace('+91', '') : appState.user.phone,
+                fullPhone: userData.phone || appState.user.fullPhone,
+                gender: userData.gender || appState.user.gender,
+                role: userData.role || appState.user.role
+            };
+            console.log('Loaded user profile from Firestore:', appState.user);
+            localStorage.setItem('safeHerUser', JSON.stringify(appState.user));
+        } else {
+            console.log('No Firestore profile found, using local data');
+        }
+    } catch (error) {
+        console.error('Error loading user profile:', error);
+    }
+}
+
+async function loadFamilyConnections() {
+    if (!appState.user.uid) return;
+
+    try {
+        const connectionsQuery = query(
+            collection(db, 'familyConnections'),
+            where('members', 'array-contains', appState.user.uid)
+        );
+
+        const querySnapshot = await getDocs(connectionsQuery);
+        const members = [];
+
+        for (const docSnap of querySnapshot.docs) {
+            const connection = docSnap.data();
+            const otherUid = connection.members.find(uid => uid !== appState.user.uid);
+
+            if (!otherUid) continue;
+
+            const otherUserRef = doc(db, 'users', otherUid);
+            const otherUserSnap = await getDoc(otherUserRef);
+
+            if (otherUserSnap.exists()) {
+                const otherUser = otherUserSnap.data();
+                members.push({
+                    id: otherUid,
+                    uid: otherUid,
+                    name: otherUser.name,
+                    phone: otherUser.phone,
+                    role: otherUser.role
+                });
+            }
+        }
+
+        appState.familyMembers = members;
+        renderFamilyMembers();
+        watchLiveLocations();
+    } catch (error) {
+        console.error('Error loading family connections:', error);
+    }
+}
+
+function watchLiveLocations() {
+    liveLocationListeners.forEach(unsub => unsub());
+    liveLocationListeners = [];
+
+    const connectedIds = appState.familyMembers.map(member => member.uid);
+    if (appState.user.uid && !connectedIds.includes(appState.user.uid)) {
+        connectedIds.push(appState.user.uid);
+    }
+
+    connectedIds.forEach(uid => {
+        const liveDoc = doc(db, 'liveLocations', uid);
+        const unsubscribe = onSnapshot(liveDoc, (snapshot) => {
+            if (snapshot.exists()) {
+                appState.liveLocations[uid] = snapshot.data();
+                renderConnectedMembers();
+                updateLocationInfo();
+            }
+        });
+
+        liveLocationListeners.push(unsubscribe);
+    });
+}
+
+function renderConnectedMembers() {
+    const connectedMembersList = document.getElementById('connectedMembersList');
+    if (!connectedMembersList) return;
+
+    if (appState.familyMembers.length === 0) {
+        connectedMembersList.innerHTML = `
+            <div class="empty-state">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                    <circle cx="9" cy="7" r="4"/>
+                    <line x1="19" y1="8" x2="19" y2="14"/>
+                    <line x1="22" y1="11" x2="16" y2="11"/>
+                </svg>
+                <p>No connected family members yet</p>
+            </div>
+        `;
+        return;
+    }
+
+    connectedMembersList.innerHTML = appState.familyMembers.map(member => {
+        const live = appState.liveLocations[member.uid];
+        const locationText = live ? `${live.latitude.toFixed(4)}, ${live.longitude.toFixed(4)}` : 'Waiting for location';
+        const updatedAt = live && live.updatedAt ? new Date(live.updatedAt.seconds * 1000).toLocaleTimeString() : 'Pending';
+        const safeModeStatus = live ? (live.safeMode ? 'ON' : 'OFF') : 'Unknown';
+
+        return `
+            <div class="member-card">
+                <div class="member-details">
+                    <span class="member-name">${member.name}</span>
+                    <span class="member-role ${member.role}">${member.role}</span>
+                </div>
+                <div class="member-meta">
+                    <span>${locationText}</span>
+                    <span>${safeModeStatus} • ${updatedAt}</span>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+async function saveLiveLocation(position) {
+    if (!appState.user.uid) return;
+
+    const locationDoc = doc(db, 'liveLocations', appState.user.uid);
+
+    try {
+        await setDoc(locationDoc, {
+            uid: appState.user.uid,
+            name: appState.user.name,
+            phone: appState.user.fullPhone,
+            role: appState.user.role,
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude,
+            safeMode: appState.safeMode,
+            updatedAt: serverTimestamp()
+        }, { merge: true });
+
+        currentUserLocation = position.coords;
+        console.log('Live location saved:', position.coords);
+        updateLocationInfo();
+    } catch (error) {
+        console.error('Error saving live location:', error);
+    }
+}
+
+function startSafeModeTracking() {
+    if (!('geolocation' in navigator)) {
+        showToast('Geolocation is not supported in this browser.', 'error');
+        return;
+    }
+
+    if (locationWatchId !== null) {
+        navigator.geolocation.clearWatch(locationWatchId);
+    }
+
+    locationWatchId = navigator.geolocation.watchPosition(
+        (position) => {
+            currentUserLocation = position.coords;
+            saveLiveLocation(position);
+            console.log('Location update:', position.coords.latitude, position.coords.longitude);
+        },
+        (error) => {
+            console.error('Geolocation error:', error);
+            showToast('Unable to access location. Please enable location services.', 'error');
+        },
+        {
+            enableHighAccuracy: true,
+            maximumAge: 5000,
+            timeout: 10000
+        }
+    );
+}
+
+function stopSafeModeTracking() {
+    if (locationWatchId !== null) {
+        navigator.geolocation.clearWatch(locationWatchId);
+        locationWatchId = null;
+        console.log('Safe Mode tracking stopped');
+    }
+}
+
+function getCurrentLocationText() {
+    if (currentUserLocation) {
+        return `${currentUserLocation.latitude.toFixed(4)}, ${currentUserLocation.longitude.toFixed(4)}`;
+    }
+    return 'Waiting for GPS';
+}
+
+async function createEmergencyAlert() {
+    const alertLocation = currentUserLocation ? {
+        latitude: currentUserLocation.latitude,
+        longitude: currentUserLocation.longitude
+    } : null;
+
+    try {
+        await addDoc(collection(db, 'emergencyAlerts'), {
+            userUid: appState.user.uid,
+            name: appState.user.name,
+            phone: appState.user.fullPhone,
+            role: appState.user.role,
+            safeMode: appState.safeMode,
+            location: alertLocation,
+            createdAt: serverTimestamp()
+        });
+        console.log('SOS emergency alert saved to Firestore');
+        showToast('Emergency Alert Sent', 'error');
+    } catch (error) {
+        console.error('Error creating emergency alert:', error);
+        showToast('Unable to send emergency alert', 'error');
+    }
 }
 
 // ==================== HOME DASHBOARD ====================
@@ -354,11 +667,19 @@ function initHome() {
             updateSafeModeStatus();
 
             if (appState.safeMode) {
+                startSafeModeTracking();
                 showToast('Safe Mode activated', 'success');
+                console.log('Safe Mode activated');
             } else {
+                stopSafeModeTracking();
                 showToast('Safe Mode deactivated', 'error');
+                console.log('Safe Mode deactivated');
             }
         });
+
+        if (appState.safeMode) {
+            startSafeModeTracking();
+        }
     }
 
     // SOS Button
@@ -370,11 +691,12 @@ function initHome() {
     }
 }
 
-function handleSosClick() {
+async function handleSosClick() {
     const confirmEmergency = confirm('Are you sure you want to trigger emergency alert?');
 
     if (confirmEmergency) {
         triggerEmergency();
+        await createEmergencyAlert();
     }
 }
 
@@ -455,37 +777,76 @@ function initFamily() {
     }
 }
 
-function handleAddFamily() {
+async function handleAddFamily() {
     const phoneInput = document.getElementById('familyPhone');
     if (!phoneInput) return;
 
     const phone = phoneInput.value.trim();
+    const fullPhone = phone.startsWith('+') ? phone : `+91${phone}`;
 
     if (!phone || phone.length < 10) {
         showToast('Please enter a valid phone number', 'error');
         return;
     }
 
-    // Check if already added
-    const exists = appState.familyMembers.some(m => m.phone === phone);
+    if (!appState.user.uid) {
+        showToast('You must be logged in to add family members', 'error');
+        return;
+    }
+
+    const exists = appState.familyMembers.some(m => m.phone === fullPhone);
     if (exists) {
         showToast('Family member already added', 'error');
         return;
     }
 
-    // Add new family member
-    const newMember = {
-        id: Date.now(),
-        name: `Member ${appState.familyMembers.length + 1}`,
-        phone: phone,
-        role: appState.user.role === 'parent' ? 'child' : 'parent'
-    };
+    try {
+        const userQuery = query(collection(db, 'users'), where('phone', '==', fullPhone));
+        const userSnapshot = await getDocs(userQuery);
 
-    appState.familyMembers.push(newMember);
-    renderFamilyMembers();
-    phoneInput.value = '';
+        if (userSnapshot.empty) {
+            showToast('User not found. Ask them to sign up first.', 'error');
+            return;
+        }
 
-    showToast('Family member added successfully!', 'success');
+        const targetUserDoc = userSnapshot.docs[0];
+        const targetUser = targetUserDoc.data();
+        const targetUid = targetUserDoc.id;
+
+        if (targetUid === appState.user.uid) {
+            showToast('You cannot add yourself', 'error');
+            return;
+        }
+
+        const connectionQuery = query(
+            collection(db, 'familyConnections'),
+            where('members', 'array-contains', appState.user.uid)
+        );
+        const connectionSnapshot = await getDocs(connectionQuery);
+
+        const alreadyConnected = connectionSnapshot.docs.some(docSnap => {
+            const connectionData = docSnap.data();
+            return connectionData.members.includes(targetUid);
+        });
+
+        if (alreadyConnected) {
+            showToast('Family member already connected', 'error');
+            return;
+        }
+
+        await addDoc(collection(db, 'familyConnections'), {
+            members: [appState.user.uid, targetUid],
+            createdBy: appState.user.uid,
+            createdAt: serverTimestamp()
+        });
+
+        phoneInput.value = '';
+        showToast('Family member added successfully!', 'success');
+        await loadFamilyConnections();
+    } catch (error) {
+        console.error('Error adding family member:', error);
+        showToast('Unable to add family member right now', 'error');
+    }
 }
 
 function renderFamilyMembers() {
@@ -519,7 +880,7 @@ function renderFamilyMembers() {
                 <span class="family-name">${member.name}</span>
                 <span class="family-role ${member.role}">${member.role}</span>
             </div>
-            <button class="remove-family-btn" onclick="removeFamilyMember(${member.id})">
+            <button class="remove-family-btn" onclick="removeFamilyMember('${member.id}')">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <line x1="18" y1="6" x2="6" y2="18"/>
                     <line x1="6" y1="6" x2="18" y2="18"/>
@@ -529,9 +890,28 @@ function renderFamilyMembers() {
     `).join('');
 }
 
-function removeFamilyMember(id) {
+async function removeFamilyMember(id) {
     const index = appState.familyMembers.findIndex(m => m.id === id);
     if (index > -1) {
+        const member = appState.familyMembers[index];
+
+        try {
+            const connectionQuery = query(
+                collection(db, 'familyConnections'),
+                where('members', 'array-contains', appState.user.uid)
+            );
+            const connectionSnapshot = await getDocs(connectionQuery);
+
+            for (const docSnap of connectionSnapshot.docs) {
+                const connection = docSnap.data();
+                if (connection.members.includes(member.uid)) {
+                    await deleteDoc(doc(db, 'familyConnections', docSnap.id));
+                }
+            }
+        } catch (error) {
+            console.error('Error removing family connection:', error);
+        }
+
         appState.familyMembers.splice(index, 1);
         renderFamilyMembers();
         showToast('Family member removed', 'success');
@@ -542,24 +922,25 @@ function removeFamilyMember(id) {
 
 function initTracking() {
     updateLocationInfo();
+    watchLiveLocations();
 }
 
 function updateLocationInfo() {
     const currentLocation = document.getElementById('currentLocation');
     const eta = document.getElementById('eta');
+    const locationStatus = document.getElementById('locationStatus');
 
     if (currentLocation) {
-        // Simulated location
-        setTimeout(() => {
-            currentLocation.textContent = 'Main Street, City Center';
-        }, 1000);
+        currentLocation.textContent = getCurrentLocationText();
     }
 
     if (eta) {
-        // Simulated ETA
-        setTimeout(() => {
-            eta.textContent = '15 min';
-        }, 1500);
+        eta.textContent = appState.safeMode ? 'Live tracking on' : 'Tracking paused';
+    }
+
+    if (locationStatus) {
+        locationStatus.textContent = appState.safeMode ? 'Protection Active' : 'Protection Disabled';
+        locationStatus.classList.toggle('active', appState.safeMode);
     }
 }
 
@@ -706,34 +1087,39 @@ function removeContact(index) {
     }
 }
 
-function handleLogout() {
+async function handleLogout() {
     const confirmLogout = confirm('Are you sure you want to logout?');
 
     if (confirmLogout) {
-        // Clear data
-        localStorage.removeItem('safeHerUser');
-        appState.user = { name: '', phone: '', gender: '', role: '' };
-        appState.familyMembers = [];
+        try {
+            await signOut(auth);
+            console.log('User signed out of Firebase');
+        } catch (error) {
+            console.error('Error signing out:', error);
+        }
 
-        // Clear inputs
+        stopSafeModeTracking();
+        liveLocationListeners.forEach(unsub => unsub());
+        liveLocationListeners = [];
+
+        localStorage.removeItem('safeHerUser');
+        appState.user = { uid: '', name: '', phone: '', fullPhone: '', gender: '', role: '' };
+        appState.familyMembers = [];
+        appState.liveLocations = {};
+
         const userName = document.getElementById('userName');
         const userPhone = document.getElementById('userPhone');
         if (userName) userName.value = '';
         if (userPhone) userPhone.value = '';
 
-        // Reset login steps
         document.getElementById('loginStep1').classList.add('active');
         document.getElementById('loginStep2').classList.remove('active');
 
-        // Clear OTP inputs
         document.querySelectorAll('.otp-input').forEach(input => input.value = '');
-
-        // Clear gender/role selection
         document.querySelectorAll('.selection-btn').forEach(btn => btn.classList.remove('active'));
 
         showToast('Logged out successfully', 'success');
 
-        // Go to login
         setTimeout(() => {
             showScreen('login');
         }, 1000);
@@ -758,6 +1144,8 @@ function initNavigation() {
 // ==================== APP INITIALIZATION ====================
 
 function initApp() {
+    initFirebase();
+
     // Check for saved user data
     const savedUser = localStorage.getItem('safeHerUser');
 
