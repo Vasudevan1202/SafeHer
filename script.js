@@ -20,6 +20,11 @@ const firebaseApp = initializeApp(firebaseConfig);
 const auth = getAuth(firebaseApp);
 const db = getFirestore(firebaseApp);
 
+// MSG91 configuration (NOTE: embedding API keys in client-side code is insecure
+// for production. This is implemented per your request for a pure frontend demo.)
+const MSG91_AUTH_KEY = '520745AQRjjLhis4I6a184f42P1';
+const MSG91_TEMPLATE_ID = '6a184e12c2908d84b0039312';
+
 let confirmationResult = null;
 let locationWatchId = null;
 let liveLocationListeners = [];
@@ -38,6 +43,8 @@ const appState = {
     },
     familyMembers: [],
     liveLocations: {},
+    incomingRequests: [],
+    outgoingRequests: [],
     emergencyContacts: [
         { name: 'Mom', phone: '+91 9876543210' },
         { name: 'Dad', phone: '+91 9876543211' }
@@ -140,6 +147,8 @@ function initFirebase() {
             console.log('Firebase auth state changed: user signed in', user.uid);
             await loadUserProfile(user);
             await loadFamilyConnections();
+            await loadPendingRequests();
+            await loadOutgoingRequests();
             updateDashboard();
             initTracking();
             showScreen('home');
@@ -216,27 +225,41 @@ function initLogin() {
     }
 }
 
+// Send OTP using MSG91 REST API
 async function handleSendOtp() {
     const nameInput = document.getElementById('userName');
     const phoneInput = document.getElementById('userPhone');
+    const sendOtpBtn = document.getElementById('sendOtpBtn');
 
     if (!nameInput || !phoneInput) return;
 
     const name = nameInput.value.trim();
-    const phone = phoneInput.value.trim();
+    let phone = phoneInput.value.trim();
 
-    // Validation
+    // Basic validation
     if (!name) {
         showToast('Please enter your name', 'error');
         nameInput.focus();
         return;
     }
 
-    if (!phone || phone.length < 10) {
+    // Normalize Indian numbers: add +91 when missing
+    if (!phone) {
+        showToast('Please enter your phone number', 'error');
+        phoneInput.focus();
+        return;
+    }
+
+    // Strip non-digits
+    phone = phone.replace(/\D/g, '');
+    if (phone.length < 10) {
         showToast('Please enter a valid phone number', 'error');
         phoneInput.focus();
         return;
     }
+
+    // If user entered local 10-digit number, prefix +91
+    const fullPhone = phone.startsWith('91') && phone.length >= 12 ? `+${phone}` : (phone.length === 10 ? `+91${phone}` : `+${phone}`);
 
     if (!appState.user.gender) {
         showToast('Please select your gender', 'error');
@@ -248,34 +271,58 @@ async function handleSendOtp() {
         return;
     }
 
-    // Save user data
+    // Save user data locally
     appState.user.name = name;
     appState.user.phone = phone;
-    appState.user.fullPhone = phone.startsWith('+') ? phone : `+91${phone}`;
+    appState.user.fullPhone = fullPhone;
 
-    // Send OTP using Firebase Phone Auth
+    // UI: show loading spinner on button
+    if (sendOtpBtn) {
+        sendOtpBtn.classList.add('loading');
+        sendOtpBtn.setAttribute('aria-busy', 'true');
+    }
+
     try {
-        const verifier = window.recaptchaVerifier;
-        if (!verifier) {
-            showToast('Unable to initialize reCAPTCHA verification', 'error');
-            return;
+        // MSG91 send OTP endpoint (using legacy HTTP API)
+        const url = `https://control.msg91.com/api/sendotp.php?authkey=${encodeURIComponent(MSG91_AUTH_KEY)}&mobile=${encodeURIComponent(fullPhone.replace('+',''))}&template_id=${encodeURIComponent(MSG91_TEMPLATE_ID)}`;
+
+        const res = await fetch(url, { method: 'GET' });
+        const text = await res.text();
+
+        // MSG91 legacy API returns simple success codes / messages.
+        if (!res.ok) {
+            console.error('MSG91 send OTP failed', res.status, text);
+            throw new Error('Failed to send OTP. Try again later.');
         }
 
-        confirmationResult = await signInWithPhoneNumber(auth, appState.user.fullPhone, verifier);
-        console.log('OTP sent to', appState.user.fullPhone);
-        showToast('OTP sent successfully!', 'success');
+        // Basic success detection: server returns JSON or text containing "success" or "OTP"
+        if (/success|otp sent|OTP/i.test(text)) {
+            showToast('OTP sent successfully!', 'success');
+            // Show OTP entry UI
+            document.getElementById('loginStep1').classList.remove('active');
+            document.getElementById('loginStep2').classList.add('active');
 
-        document.getElementById('loginStep1').classList.remove('active');
-        document.getElementById('loginStep2').classList.add('active');
+            // Start resend timer
+            startResendTimer(30);
 
-        const firstOtpInput = document.querySelector('.otp-input[data-index="0"]');
-        if (firstOtpInput) firstOtpInput.focus();
+            const firstOtpInput = document.querySelector('.otp-input[data-index="0"]');
+            if (firstOtpInput) firstOtpInput.focus();
+        } else {
+            console.error('Unexpected MSG91 response:', text);
+            throw new Error('Unable to send OTP. Please try again.');
+        }
     } catch (error) {
-        console.error('Failed to send OTP:', error);
+        console.error('Failed to send OTP via MSG91:', error);
         showToast(error.message || 'Failed to send OTP, please try again', 'error');
+    } finally {
+        if (sendOtpBtn) {
+            sendOtpBtn.classList.remove('loading');
+            sendOtpBtn.removeAttribute('aria-busy');
+        }
     }
 }
 
+// Verify OTP using MSG91
 async function handleVerifyOtp() {
     const otpInputs = document.querySelectorAll('.otp-input');
     let otp = '';
@@ -284,53 +331,88 @@ async function handleVerifyOtp() {
         otp += input.value;
     });
 
-    if (otp.length !== 6) {
+    if (otp.length < 4) {
         showToast('Please enter complete OTP', 'error');
         return;
     }
 
-    if (!confirmationResult) {
+    if (!appState.user.fullPhone) {
         showToast('Please request OTP first', 'error');
         return;
     }
 
     try {
-        const credential = await confirmationResult.confirm(otp);
-        const user = credential.user;
-        console.log('Phone authentication successful', user.uid);
-        showToast('Verification successful!', 'success');
-        await handleLoginSuccess(user);
+        const mobileForApi = appState.user.fullPhone.replace('+', '');
+        const url = `https://control.msg91.com/api/verifyRequestOTP.php?authkey=${encodeURIComponent(MSG91_AUTH_KEY)}&mobile=${encodeURIComponent(mobileForApi)}&otp=${encodeURIComponent(otp)}`;
+
+        const res = await fetch(url, { method: 'GET' });
+        const text = await res.text();
+
+        if (!res.ok) {
+            console.error('MSG91 verify OTP error', res.status, text);
+            throw new Error('OTP verification failed. Please try again.');
+        }
+
+        // Detect success in response
+        if (/success|OTP verified|verified/i.test(text)) {
+            showToast('Verification successful!', 'success');
+            // Proceed to create or find user in Firestore and continue login flow
+            const userLike = { uid: null, phone: appState.user.fullPhone };
+            await handleLoginSuccess(userLike);
+        } else {
+            console.error('MSG91 verify unexpected response:', text);
+            throw new Error('Incorrect OTP. Please try again.');
+        }
     } catch (error) {
-        console.error('OTP verification failed:', error);
+        console.error('OTP verification failed via MSG91:', error);
         showToast(error.message || 'OTP verification failed', 'error');
     }
 }
 
 function handleResendOtp() {
-    showToast('OTP resent successfully!', 'success');
+    // Trigger resend using same flow as initial send
+    const resendBtn = document.getElementById('resendOtpBtn');
+    if (!resendBtn) return;
 
-    // Clear OTP inputs
-    const otpInputs = document.querySelectorAll('.otp-input');
-    otpInputs.forEach(input => {
-        input.value = '';
-    });
+    // Prevent clicking when disabled
+    if (resendBtn.disabled) return;
 
-    // Focus first input
-    if (otpInputs[0]) otpInputs[0].focus();
+    // Re-run send OTP flow using existing phone value
+    const phoneInput = document.getElementById('userPhone');
+    if (!phoneInput) return;
 
-    // Demo: auto fill again
-    setTimeout(() => {
-        otpInputs.forEach((input, index) => {
-            setTimeout(() => {
-                input.value = index + 1;
-                input.dispatchEvent(new Event('input'));
-            }, index * 100);
-        });
-    }, 500);
+    // Show a small notice and call handleSendOtp to resend
+    showToast('Resending OTP...', 'default');
+    handleSendOtp();
+}
+
+// Start a resend timer to disable the resend button for `seconds` seconds
+function startResendTimer(seconds) {
+    const resendBtn = document.getElementById('resendOtpBtn');
+    if (!resendBtn) return;
+
+    resendBtn.disabled = true;
+    resendBtn.classList.add('disabled');
+
+    let remaining = seconds;
+    resendBtn.textContent = `Resend in ${remaining}s`;
+
+    const interval = setInterval(() => {
+        remaining--;
+        if (remaining > 0) {
+            resendBtn.textContent = `Resend in ${remaining}s`;
+        } else {
+            clearInterval(interval);
+            resendBtn.disabled = false;
+            resendBtn.classList.remove('disabled');
+            resendBtn.textContent = 'Resend OTP';
+        }
+    }, 1000);
 }
 
 async function handleLoginSuccess(user) {
-    appState.user.uid = user.uid;
+    // If user was created via MSG91 flow, `user.uid` may be null. We'll resolve or create
+    // a Firestore profile inside `saveUserToFirestore` which will set `appState.user.uid`.
     appState.user.fullPhone = user.phone || appState.user.fullPhone;
     appState.user.phone = appState.user.fullPhone ? appState.user.fullPhone.replace('+91', '') : appState.user.phone;
 
@@ -350,15 +432,47 @@ async function handleLoginSuccess(user) {
 
 async function saveUserToFirestore(uid) {
     try {
-        const userRef = doc(db, 'users', uid);
-        await setDoc(userRef, {
+        // If UID provided (unlikely from MSG91 flow), use it.
+        if (uid) {
+            const userRef = doc(db, 'users', uid);
+            await setDoc(userRef, {
+                name: appState.user.name,
+                phone: appState.user.fullPhone,
+                gender: appState.user.gender,
+                role: appState.user.role,
+                updatedAt: serverTimestamp()
+            }, { merge: true });
+            appState.user.uid = uid;
+            console.log('User saved to Firestore:', uid);
+            return;
+        }
+
+        // Try finding an existing user by phone
+        const usersQuery = query(collection(db, 'users'), where('phone', '==', appState.user.fullPhone));
+        const usersSnap = await getDocs(usersQuery);
+        if (!usersSnap.empty) {
+            const existingDoc = usersSnap.docs[0];
+            await updateDoc(doc(db, 'users', existingDoc.id), {
+                name: appState.user.name,
+                gender: appState.user.gender,
+                role: appState.user.role,
+                updatedAt: serverTimestamp()
+            });
+            appState.user.uid = existingDoc.id;
+            console.log('Existing user updated:', existingDoc.id);
+            return;
+        }
+
+        // Create new user document
+        const newUserRef = await addDoc(collection(db, 'users'), {
             name: appState.user.name,
             phone: appState.user.fullPhone,
             gender: appState.user.gender,
             role: appState.user.role,
             createdAt: serverTimestamp()
-        }, { merge: true });
-        console.log('User saved to Firestore:', uid);
+        });
+        appState.user.uid = newUserRef.id;
+        console.log('New user created in Firestore:', newUserRef.id);
     } catch (error) {
         console.error('Error saving user to Firestore:', error);
         showToast('Unable to save profile. Try again later.', 'error');
@@ -775,6 +889,9 @@ function initFamily() {
             }
         });
     }
+
+    loadPendingRequests();
+    loadOutgoingRequests();
 }
 
 async function handleAddFamily() {
@@ -801,51 +918,181 @@ async function handleAddFamily() {
     }
 
     try {
-        const userQuery = query(collection(db, 'users'), where('phone', '==', fullPhone));
-        const userSnapshot = await getDocs(userQuery);
-
-        if (userSnapshot.empty) {
-            showToast('User not found. Ask them to sign up first.', 'error');
-            return;
-        }
-
-        const targetUserDoc = userSnapshot.docs[0];
-        const targetUser = targetUserDoc.data();
-        const targetUid = targetUserDoc.id;
-
-        if (targetUid === appState.user.uid) {
-            showToast('You cannot add yourself', 'error');
-            return;
-        }
-
-        const connectionQuery = query(
-            collection(db, 'familyConnections'),
-            where('members', 'array-contains', appState.user.uid)
+        const duplicateQuery = query(
+            collection(db, 'familyRequests'),
+            where('senderPhone', '==', appState.user.fullPhone),
+            where('receiverPhone', '==', fullPhone),
+            where('status', '==', 'pending')
         );
-        const connectionSnapshot = await getDocs(connectionQuery);
+        const duplicateSnapshot = await getDocs(duplicateQuery);
 
-        const alreadyConnected = connectionSnapshot.docs.some(docSnap => {
-            const connectionData = docSnap.data();
-            return connectionData.members.includes(targetUid);
-        });
-
-        if (alreadyConnected) {
-            showToast('Family member already connected', 'error');
+        if (!duplicateSnapshot.empty) {
+            showToast('A connection request is already pending', 'error');
             return;
         }
 
-        await addDoc(collection(db, 'familyConnections'), {
-            members: [appState.user.uid, targetUid],
-            createdBy: appState.user.uid,
-            createdAt: serverTimestamp()
+        await addDoc(collection(db, 'familyRequests'), {
+            senderUid: appState.user.uid,
+            senderPhone: appState.user.fullPhone,
+            receiverPhone: fullPhone,
+            senderRole: appState.user.role,
+            status: 'pending',
+            timestamp: serverTimestamp()
         });
 
         phoneInput.value = '';
-        showToast('Family member added successfully!', 'success');
-        await loadFamilyConnections();
+        showToast('Connection request sent', 'success');
+        await loadPendingRequests();
+        await loadOutgoingRequests();
     } catch (error) {
-        console.error('Error adding family member:', error);
-        showToast('Unable to add family member right now', 'error');
+        console.error('Error sending family request:', error);
+        showToast('Unable to send connection request', 'error');
+    }
+}
+
+async function loadPendingRequests() {
+    const requestsList = document.getElementById('requestsList');
+    if (!appState.user.fullPhone || !requestsList) return;
+
+    try {
+        const pendingQuery = query(
+            collection(db, 'familyRequests'),
+            where('receiverPhone', '==', appState.user.fullPhone),
+            where('status', '==', 'pending')
+        );
+        const snapshot = await getDocs(pendingQuery);
+        appState.incomingRequests = snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() }));
+        renderPendingRequests();
+    } catch (error) {
+        console.error('Error loading pending requests:', error);
+    }
+}
+
+async function loadOutgoingRequests() {
+    const outgoingContainer = document.getElementById('outgoingRequestsList');
+    if (!appState.user.fullPhone || !outgoingContainer) return;
+
+    try {
+        const outgoingQuery = query(
+            collection(db, 'familyRequests'),
+            where('senderPhone', '==', appState.user.fullPhone)
+        );
+        const snapshot = await getDocs(outgoingQuery);
+        appState.outgoingRequests = snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() }));
+        renderOutgoingRequests();
+    } catch (error) {
+        console.error('Error loading outgoing requests:', error);
+    }
+}
+
+function renderPendingRequests() {
+    const requestsList = document.getElementById('requestsList');
+    if (!requestsList) return;
+
+    if (appState.incomingRequests.length === 0) {
+        requestsList.innerHTML = `
+            <div class="empty-state">
+                <p>No pending requests</p>
+            </div>
+        `;
+        return;
+    }
+
+    requestsList.innerHTML = appState.incomingRequests.map(request => `
+        <div class="request-card fade-in">
+            <div class="request-info">
+                <div>
+                    <p class="request-title">Connection request from <strong>${request.senderPhone}</strong></p>
+                    <p class="request-meta">Role: ${request.senderRole || 'Unknown'}</p>
+                </div>
+                <span class="status-pill pending">Pending</span>
+            </div>
+            <div class="request-actions">
+                <button class="accept-btn" onclick="acceptFamilyRequest('${request.id}')">Accept</button>
+                <button class="reject-btn" onclick="rejectFamilyRequest('${request.id}')">Reject</button>
+            </div>
+        </div>
+    `).join('');
+}
+
+function renderOutgoingRequests() {
+    const outgoingContainer = document.getElementById('outgoingRequestsList');
+    if (!outgoingContainer) return;
+
+    if (appState.outgoingRequests.length === 0) {
+        outgoingContainer.innerHTML = `
+            <div class="empty-state">
+                <p>No outgoing requests</p>
+            </div>
+        `;
+        return;
+    }
+
+    outgoingContainer.innerHTML = appState.outgoingRequests.map(request => `
+        <div class="request-card fade-in">
+            <div class="request-info">
+                <div>
+                    <p class="request-title">Request to <strong>${request.receiverPhone}</strong></p>
+                    <p class="request-meta">Role: ${request.senderRole || 'Unknown'}</p>
+                </div>
+                <span class="status-pill ${request.status}">${request.status}</span>
+            </div>
+        </div>
+    `).join('');
+}
+
+async function acceptFamilyRequest(requestId) {
+    try {
+        const requestRef = doc(db, 'familyRequests', requestId);
+        const requestSnap = await getDoc(requestRef);
+        if (!requestSnap.exists()) {
+            showToast('Request not found', 'error');
+            return;
+        }
+
+        const requestData = requestSnap.data();
+        if (requestData.status !== 'pending') {
+            showToast('Request is no longer pending', 'error');
+            await loadPendingRequests();
+            return;
+        }
+
+        await updateDoc(requestRef, { status: 'accepted' });
+
+        const senderQuery = query(collection(db, 'users'), where('phone', '==', requestData.senderPhone));
+        const senderSnapshot = await getDocs(senderQuery);
+        if (senderSnapshot.empty) {
+            showToast('Sender profile not found', 'error');
+            return;
+        }
+
+        const senderUid = senderSnapshot.docs[0].id;
+        await addDoc(collection(db, 'familyConnections'), {
+            members: [appState.user.uid, senderUid],
+            createdAt: serverTimestamp()
+        });
+
+        console.log('Family connection created for request:', requestId);
+        showToast('Connection accepted', 'success');
+        await loadFamilyConnections();
+        await loadPendingRequests();
+        await loadOutgoingRequests();
+    } catch (error) {
+        console.error('Error accepting request:', error);
+        showToast('Unable to accept request', 'error');
+    }
+}
+
+async function rejectFamilyRequest(requestId) {
+    try {
+        const requestRef = doc(db, 'familyRequests', requestId);
+        await updateDoc(requestRef, { status: 'rejected' });
+        showToast('Request rejected', 'success');
+        await loadPendingRequests();
+        await loadOutgoingRequests();
+    } catch (error) {
+        console.error('Error rejecting request:', error);
+        showToast('Unable to reject request', 'error');
     }
 }
 
@@ -1190,6 +1437,8 @@ window.showSettingsSection = showSettingsSection;
 window.hideSettingsSections = hideSettingsSections;
 window.removeFamilyMember = removeFamilyMember;
 window.removeContact = removeContact;
+window.acceptFamilyRequest = acceptFamilyRequest;
+window.rejectFamilyRequest = rejectFamilyRequest;
 
 // ==================== START APPLICATION ====================
 

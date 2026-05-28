@@ -399,6 +399,27 @@ body {
     box-shadow: 0 15px 45px -10px rgba(147, 51, 234, 0.6);
 }
 
+/* Loading spinner on primary buttons */
+.primary-btn.loading {
+    position: relative;
+    color: transparent;
+    pointer-events: none;
+}
+
+.primary-btn.loading::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 20px;
+    height: 20px;
+    margin: -10px 0 0 -10px;
+    border-radius: 50%;
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    border-top-color: white;
+    animation: spin 0.8s linear infinite;
+}
+
 .primary-btn:active {
     transform: translateY(0);
 }
@@ -418,6 +439,11 @@ body {
 
 .text-btn:hover {
     color: var(--primary-700);
+}
+
+.text-btn.disabled {
+    opacity: 0.6;
+    pointer-events: none;
 }
 
 /* OTP Section */
@@ -1746,6 +1772,119 @@ input:checked + .toggle-slider::before {
 
 .nav-item:hover svg {
     transform: translateY(-2px);
+}
+
+/* ==================== REQUEST CARDS ==================== */
+.requests-section {
+    margin-top: var(--spacing-6);
+}
+
+.requests-list {
+    display: grid;
+    gap: var(--spacing-3);
+}
+
+.request-card {
+    padding: var(--spacing-4);
+    border-radius: var(--radius-2xl);
+    background: white;
+    box-shadow: var(--shadow-md);
+    border: 1px solid rgba(147, 51, 234, 0.08);
+    animation: fadeInUp 0.35s ease forwards;
+}
+
+.request-card.fade-in {
+    opacity: 0;
+    transform: translateY(10px);
+    animation: fadeInUp 0.35s ease forwards;
+}
+
+@keyframes fadeInUp {
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.request-info {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: var(--spacing-4);
+    margin-bottom: var(--spacing-4);
+}
+
+.request-title {
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--gray-900);
+    margin-bottom: var(--spacing-1);
+}
+
+.request-meta {
+    color: var(--gray-500);
+    font-size: 0.9rem;
+}
+
+.request-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--spacing-3);
+}
+
+.accept-btn,
+.reject-btn {
+    flex: 1;
+    min-width: 120px;
+    padding: var(--spacing-3) var(--spacing-4);
+    border-radius: var(--radius-lg);
+    border: none;
+    cursor: pointer;
+    font-weight: 700;
+    transition: transform var(--transition-base), box-shadow var(--transition-base);
+}
+
+.accept-btn {
+    background: var(--gradient-primary);
+    color: white;
+    box-shadow: var(--shadow-purple);
+}
+
+.reject-btn {
+    background: var(--error-50);
+    color: var(--error-700);
+}
+
+.accept-btn:hover,
+.reject-btn:hover {
+    transform: translateY(-1px);
+}
+
+.status-pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-full);
+    padding: 0.4rem 0.85rem;
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+
+.status-pill.pending {
+    background: rgba(59, 130, 246, 0.12);
+    color: #2563eb;
+}
+
+.status-pill.accepted {
+    background: rgba(16, 185, 129, 0.12);
+    color: #059669;
+}
+
+.status-pill.rejected {
+    background: rgba(239, 68, 68, 0.12);
+    color: #b91c1c;
 }
 
 /* ==================== TOAST ==================== */
