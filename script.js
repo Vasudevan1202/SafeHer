@@ -21,8 +21,7 @@ const db = getFirestore(firebaseApp);
 
 // MSG91 configuration (NOTE: embedding API keys in client-side code is insecure
 // for production. This is implemented per your request for a pure frontend demo.)
-const MSG91_AUTH_KEY = '520745AQRjjLhis4I6a184f42P1';
-const MSG91_TEMPLATE_ID = '6a184e12c2908d84b0039312';
+// MSG91 keys are now handled server-side by the backend proxy.
 let locationWatchId = null;
 let liveLocationListeners = [];
 let familyConnectionUnsubscribe = null;
@@ -258,20 +257,22 @@ async function handleSendOtp() {
     }
 
     try {
-        // MSG91 send OTP endpoint (using legacy HTTP API)
-        const url = `https://control.msg91.com/api/sendotp.php?authkey=${encodeURIComponent(MSG91_AUTH_KEY)}&mobile=${encodeURIComponent(fullPhone.replace('+',''))}&template_id=${encodeURIComponent(MSG91_TEMPLATE_ID)}`;
+        // Call backend proxy to avoid CORS and keep the MSG91 key server-side
+        const res = await fetch('http://localhost:3000/send-otp', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mobile: fullPhone })
+        });
 
-        const res = await fetch(url, { method: 'GET' });
-        const text = await res.text();
+        const json = await res.json();
 
-        // MSG91 legacy API returns simple success codes / messages.
-        if (!res.ok) {
-            console.error('MSG91 send OTP failed', res.status, text);
-            throw new Error('Failed to send OTP. Try again later.');
+        if (!res.ok || !json.success) {
+            console.error('Backend send-otp failed', res.status, json);
+            throw new Error(json.message || 'Failed to send OTP. Try again later.');
         }
 
-        // Basic success detection: server returns JSON or text containing "success" or "OTP"
-        if (/success|otp sent|OTP/i.test(text)) {
+        // MSG91 response passed through as json.data; basic success detection
+        if (json && json.success) {
             showToast('OTP sent successfully!', 'success');
             // Show OTP entry UI
             document.getElementById('loginStep1').classList.remove('active');
@@ -317,29 +318,24 @@ async function handleVerifyOtp() {
     }
 
     try {
-        const mobileForApi = appState.user.fullPhone.replace('+', '');
-        const url = `https://control.msg91.com/api/verifyRequestOTP.php?authkey=${encodeURIComponent(MSG91_AUTH_KEY)}&mobile=${encodeURIComponent(mobileForApi)}&otp=${encodeURIComponent(otp)}`;
+        const res = await fetch('http://localhost:3000/verify-otp', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mobile: appState.user.fullPhone, otp })
+        });
+        const json = await res.json();
 
-        const res = await fetch(url, { method: 'GET' });
-        const text = await res.text();
-
-        if (!res.ok) {
-            console.error('MSG91 verify OTP error', res.status, text);
-            throw new Error('OTP verification failed. Please try again.');
+        if (!res.ok || !json.success) {
+            console.error('Backend verify-otp failed', res.status, json);
+            throw new Error(json.message || 'OTP verification failed. Please try again.');
         }
 
-        // Detect success in response
-        if (/success|OTP verified|verified/i.test(text)) {
-            showToast('Verification successful!', 'success');
-            // Proceed to create or find user in Firestore and continue login flow
-            const userLike = { uid: null, phone: appState.user.fullPhone };
-            await handleLoginSuccess(userLike);
-        } else {
-            console.error('MSG91 verify unexpected response:', text);
-            throw new Error('Incorrect OTP. Please try again.');
-        }
+        // Treat success and continue login flow
+        showToast('Verification successful!', 'success');
+        const userLike = { uid: null, phone: appState.user.fullPhone };
+        await handleLoginSuccess(userLike);
     } catch (error) {
-        console.error('OTP verification failed via MSG91:', error);
+        console.error('OTP verification failed via backend:', error);
         showToast(error.message || 'OTP verification failed', 'error');
     }
 }
