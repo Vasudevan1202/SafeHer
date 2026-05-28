@@ -1,5 +1,5 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.13.0/firebase-app.js";
-import { getAuth, RecaptchaVerifier, signInWithPhoneNumber, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/12.13.0/firebase-auth.js";
+// Removed Firebase Auth imports (using MSG91 for OTP)
 import { getFirestore, collection, doc, setDoc, getDoc, query, where, getDocs, addDoc, deleteDoc, serverTimestamp, updateDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/12.13.0/firebase-firestore.js";
 
 // Copyright 2026 Vasu
@@ -17,15 +17,12 @@ const firebaseConfig = {
 };
 
 const firebaseApp = initializeApp(firebaseConfig);
-const auth = getAuth(firebaseApp);
 const db = getFirestore(firebaseApp);
 
 // MSG91 configuration (NOTE: embedding API keys in client-side code is insecure
 // for production. This is implemented per your request for a pure frontend demo.)
 const MSG91_AUTH_KEY = '520745AQRjjLhis4I6a184f42P1';
 const MSG91_TEMPLATE_ID = '6a184e12c2908d84b0039312';
-
-let confirmationResult = null;
 let locationWatchId = null;
 let liveLocationListeners = [];
 let familyConnectionUnsubscribe = null;
@@ -127,35 +124,13 @@ function initSplash() {
 }
 
 function initFirebase() {
-    window.recaptchaVerifier = new RecaptchaVerifier('recaptcha-container', {
-        size: 'invisible',
-        callback: () => {
-            console.log('reCAPTCHA solved');
-        }
-    }, auth);
-
-    window.recaptchaVerifier.render()
-        .then(widgetId => {
-            console.log('reCAPTCHA widget rendered', widgetId);
-        })
-        .catch(error => {
-            console.error('reCAPTCHA initialization failed:', error);
-        });
-
-    onAuthStateChanged(auth, async (user) => {
-        if (user) {
-            console.log('Firebase auth state changed: user signed in', user.uid);
-            await loadUserProfile(user);
-            await loadFamilyConnections();
-            await loadPendingRequests();
-            await loadOutgoingRequests();
-            updateDashboard();
-            initTracking();
-            showScreen('home');
-        } else {
-            console.log('Firebase auth state changed: user signed out');
-        }
-    });
+    // Firebase initialized for Firestore usage only.
+    // Removed reCAPTCHA and Firebase Phone Auth since MSG91 is used for OTP.
+    try {
+        console.log('Firebase app initialized (Firestore available)');
+    } catch (e) {
+        console.error('Firebase initialization warning:', e);
+    }
 }
 
 // ==================== LOGIN FUNCTIONALITY ====================
@@ -1339,10 +1314,10 @@ async function handleLogout() {
 
     if (confirmLogout) {
         try {
-            await signOut(auth);
-            console.log('User signed out of Firebase');
+            // Firebase sign-out removed because Firebase Phone Auth is not used.
+            console.log('Performing local logout (Firebase signOut skipped)');
         } catch (error) {
-            console.error('Error signing out:', error);
+            console.error('Logout error (non-fatal):', error);
         }
 
         stopSafeModeTracking();
@@ -1463,6 +1438,17 @@ window.addEventListener('beforeunload', (e) => {
         e.preventDefault();
         e.returnValue = '';
     }
+});
+
+// Global error handlers to prevent uncaught exceptions from crashing the app
+window.addEventListener('error', (event) => {
+    console.error('Global error caught:', event.error || event.message);
+    try { showToast('An unexpected error occurred (see console).', 'error'); } catch (e) {}
+});
+
+window.addEventListener('unhandledrejection', (event) => {
+    console.error('Unhandled promise rejection:', event.reason);
+    try { showToast('Network or background error occurred.', 'error'); } catch (e) {}
 });
 
 // Handle visibility change
