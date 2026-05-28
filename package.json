@@ -1,0 +1,13 @@
+{
+  "name": "safeher-app",
+  "version": "1.0.0",
+  "description": "SafeHer - Women Safety Web Application",
+  "private": true,
+  "scripts": {
+    "dev": "npx serve -l 5000",
+    "build": "echo 'Static files ready for deployment'"
+  },
+  "keywords": ["safety", "women", "security", "app"],
+  "author": "",
+  "license": "MIT"
+}
